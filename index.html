@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>天気ボード</title>
+<style>
+  :root {
+    --bg: #0b0f17;
+    --card: #151b27;
+    --line: #232b3a;
+    --text: #e8ecf3;
+    --sub: #8a94a7;
+    --hot: #ff6b5e;
+    --cold: #5ea8ff;
+    --rain: #58c4ff;
+    --today: #f5c542;
+    --curve: #ffb04a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
+    font-family: "Noto Sans JP", "Hiragino Sans", sans-serif; }
+  body { display: flex; flex-direction: column; padding: 1.2vh 1.2vw; transition: filter 2s; }
+  body.dim { filter: brightness(0.35); }
+
+  /* ===== ヘッダー ===== */
+  header { display: flex; align-items: center; justify-content: space-between;
+    height: 11vh; padding: 0 0.6vw 0.8vh; border-bottom: 1px solid var(--line); }
+  .left { display: flex; align-items: baseline; gap: 1.4vw; }
+  .clock { font-size: 8vh; font-weight: 700; line-height: 1; }
+  .date { font-size: 3vh; color: var(--sub); }
+  .now { display: flex; align-items: center; gap: 1vw; }
+  .now .icon { font-size: 6vh; }
+  .now .temp { font-size: 6vh; font-weight: 700; }
+  .now .meta { font-size: 2.2vh; color: var(--sub); line-height: 1.5; text-align: right; }
+
+  .sec-title { font-size: 2vh; color: var(--sub); margin: 0.8vh 0 0.4vh 0.3vw; }
+
+  /* ===== 1時間ごと ===== */
+  #hourlyWrap { position: relative; height: 36vh; background: var(--card); border-radius: 1.4vh;
+    padding: 0.8vh 0.3vw; }
+  #hourly { position: relative; z-index: 1; height: 100%; display: grid;
+    grid-template-columns: repeat(24, 1fr); }
+  .h { display: flex; flex-direction: column; align-items: center; justify-content: space-between;
+    border-right: 1px solid var(--line); padding: 0.3vh 0; }
+  .h:last-child { border-right: none; }
+  .h.newday { border-left: 2px solid var(--today); }
+  .h .hh { font-size: 2.1vh; font-weight: 700; }
+  .h .hh.zero { color: var(--today); }
+  .h .hi { font-size: 3.6vh; line-height: 1.1; }
+  .h .spacer { flex: 1; }
+  .h .ht { font-size: 2.3vh; font-weight: 700; }
+  .h .hp { font-size: 1.8vh; color: var(--rain); }
+  .h .hp.zero { color: var(--sub); opacity: 0.6; }
+  .h .hmm { font-size: 1.5vh; color: var(--rain); height: 1.8vh; }
+  #curve { position: absolute; left: 0.3vw; right: 0.3vw; top: 13vh; height: 10vh; z-index: 0;
+    width: calc(100% - 0.6vw); }
+
+  /* ===== 長期 ===== */
+  #daily { flex: 1; display: grid; grid-template-columns: repeat(10, 1fr);
+    grid-auto-rows: 1fr; gap: 0.8vh 0.6vw; min-height: 0; }
+  .day { background: var(--card); border-radius: 1.4vh; padding: 0.8vh 0.2vw;
+    display: flex; flex-direction: column; align-items: center; justify-content: space-between;
+    border: 2px solid transparent; min-height: 0; overflow: hidden; }
+  .day.today { border-color: var(--today); }
+  .d { font-size: 3vh; font-weight: 700; white-space: nowrap; }
+  .d.sat { color: var(--cold); }
+  .d.sun, .d.hol { color: var(--hot); }
+  .hname { font-size: 1.5vh; color: var(--hot); height: 1.8vh; overflow: hidden; white-space: nowrap; }
+  .wicon { font-size: 8vh; line-height: 1.1; }
+  .wlabel { font-size: 2.2vh; color: var(--sub); white-space: nowrap; }
+  .t { font-size: 4vh; font-weight: 700; white-space: nowrap; }
+  .t .max { color: var(--hot); }
+  .t .min { color: var(--cold); }
+  .t .sep { color: var(--sub); font-weight: 400; margin: 0 0.15vw; }
+  .p { font-size: 2.6vh; color: var(--rain); white-space: nowrap; }
+  .msg { grid-column: 1 / -1; align-self: center; text-align: center; font-size: 3vh; color: var(--sub); }
+</style>
+</head>
+<body>
+<header>
+  <div class="left">
+    <div class="clock" id="clock">--:--</div>
+    <div class="date" id="date"></div>
+  </div>
+  <div class="now">
+    <div class="icon" id="nowIcon"></div>
+    <div class="temp" id="nowTemp"></div>
+    <div class="meta"><div id="place"></div><div id="updated">読み込み中…</div></div>
+  </div>
+</header>
+
+<div class="sec-title">1時間ごと（これから24時間）</div>
+<div id="hourlyWrap">
+  <svg id="curve" viewBox="0 0 24 100" preserveAspectRatio="none"></svg>
+  <div id="hourly"><div class="msg">予報を取得しています…</div></div>
+</div>
+
+<div class="sec-title" id="dailyTitle">長期予報</div>
+<main id="daily"></main>
+
+<script>
+(function () {
+  // ===== 設定（URLの ?lat=..&lon=..&name=..&days=.. で上書き可） =====
+  var q = {};
+  location.search.replace(/^\?/, '').split('&').forEach(function (kv) {
+    if (!kv) return;
+    var a = kv.split('=');
+    q[decodeURIComponent(a[0])] = decodeURIComponent(a[1] || '');
+  });
+  var LAT  = parseFloat(q.lat)  || 35.4233;   // 岐阜市
+  var LON  = parseFloat(q.lon)  || 136.7607;
+  var NAME = q.name || '岐阜市';
+  var DAYS = Math.min(16, Math.max(7, parseInt(q.days, 10) || 10));
+  var DIM_FROM = q.dimfrom !== undefined ? parseInt(q.dimfrom, 10) : 22; // 夜間減光 開始
+  var DIM_TO   = q.dimto   !== undefined ? parseInt(q.dimto, 10)   : 6;  // 終了
+  var REFRESH_MIN = 30;
+  var HOURS = 24;
+
+  var WD = ['日', '月', '火', '水', '木', '金', '土'];
+  var holidays = {};
+
+  // WMO天気コード → [昼アイコン, ラベル, 夜アイコン]
+  function wx(code, isDay) {
+    var m = {
+      0: ['☀️', '快晴', '🌙'], 1: ['🌤️', '晴れ', '🌙'], 2: ['⛅', '晴時々曇', '☁️'], 3: ['☁️', '曇り'],
+      45: ['🌫️', '霧'], 48: ['🌫️', '霧'],
+      51: ['🌦️', '霧雨', '🌧️'], 53: ['🌦️', '霧雨', '🌧️'], 55: ['🌧️', '霧雨'],
+      56: ['🌧️', '着氷性霧雨'], 57: ['🌧️', '着氷性霧雨'],
+      61: ['🌦️', '小雨', '🌧️'], 63: ['🌧️', '雨'], 65: ['🌧️', '大雨'],
+      66: ['🌧️', '着氷性の雨'], 67: ['🌧️', '着氷性の雨'],
+      71: ['🌨️', '小雪'], 73: ['🌨️', '雪'], 75: ['❄️', '大雪'], 77: ['🌨️', '雪'],
+      80: ['🌦️', 'にわか雨', '🌧️'], 81: ['🌧️', 'にわか雨'], 82: ['⛈️', '激しい雨'],
+      85: ['🌨️', 'にわか雪'], 86: ['❄️', 'にわか雪'],
+      95: ['⛈️', '雷雨'], 96: ['⛈️', '雷雨'], 99: ['⛈️', '雷雨']
+    };
+    var e = m[code] || ['❔', '-'];
+    var icon = (isDay === 0 && e[2]) ? e[2] : e[0];
+    return [icon, e[1]];
+  }
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function round(v) { return v === null || v === undefined ? '-' : Math.round(v); }
+
+  // ===== 時計・夜間減光 =====
+  function tick() {
+    var n = new Date();
+    document.getElementById('clock').textContent = pad(n.getHours()) + ':' + pad(n.getMinutes());
+    document.getElementById('date').textContent =
+      (n.getMonth() + 1) + '月' + n.getDate() + '日（' + WD[n.getDay()] + '）';
+    var h = n.getHours();
+    var dim = DIM_FROM > DIM_TO ? (h >= DIM_FROM || h < DIM_TO) : (h >= DIM_FROM && h < DIM_TO);
+    document.body.className = dim ? 'dim' : '';
+    // 毎日3:00にページごと再読み込み（長時間稼働の安定化）
+    if (h === 3 && n.getMinutes() === 0 && n.getSeconds() < 10) location.reload();
+  }
+
+  // ===== 祝日（取得できなくても表示は続行） =====
+  function loadHolidays() {
+    return fetch('https://holidays-jp.github.io/api/v1/date.json')
+      .then(function (r) { return r.json(); })
+      .then(function (j) { holidays = j || {}; })
+      .catch(function () {});
+  }
+
+  // ===== 予報 =====
+  function loadForecast() {
+    var url = 'https://api.open-meteo.com/v1/forecast'
+      + '?latitude=' + LAT + '&longitude=' + LON
+      + '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum'
+      + '&hourly=temperature_2m,weather_code,precipitation_probability,precipitation,is_day'
+      + '&current=temperature_2m,weather_code,is_day'
+      + '&timezone=Asia%2FTokyo&forecast_days=' + Math.max(DAYS, 2);
+    return fetch(url)
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (data) { renderHourly(data); renderDaily(data); renderNow(data); })
+      .catch(function (e) {
+        document.getElementById('updated').textContent = '取得失敗（' + e.message + '）・再試行します';
+        setTimeout(loadForecast, 5 * 60 * 1000);
+      });
+  }
+
+  function renderHourly(data) {
+    var h = data.hourly;
+    var n = new Date();
+    var nowKey = ymd(n) + 'T' + pad(n.getHours()) + ':00';
+    var start = h.time.indexOf(nowKey);
+    if (start < 0) start = 0;
+    var end = Math.min(start + HOURS, h.time.length);
+
+    var html = '', temps = [];
+    for (var i = start; i < end; i++) {
+      var hour = parseInt(h.time[i].substr(11, 2), 10);
+      var x = wx(h.weather_code[i], h.is_day ? h.is_day[i] : 1);
+      var pp = h.precipitation_probability ? h.precipitation_probability[i] : null;
+      var mm = h.precipitation ? h.precipitation[i] : 0;
+      temps.push(h.temperature_2m[i]);
+      html += '<div class="h' + (hour === 0 && i !== start ? ' newday' : '') + '">'
+        + '<div class="hh' + (hour === 0 ? ' zero' : '') + '">'
+        + (i === start ? '今' : (hour === 0 ? (+h.time[i].substr(5, 2)) + '/' + (+h.time[i].substr(8, 2)) : hour)) + '</div>'
+        + '<div class="hi">' + x[0] + '</div>'
+        + '<div class="spacer"></div>'
+        + '<div class="ht">' + round(h.temperature_2m[i]) + '°</div>'
+        + '<div class="hp' + (!pp ? ' zero' : '') + '">' + (pp === null ? '-' : pp) + '%</div>'
+        + '<div class="hmm">' + (mm >= 0.1 ? mm.toFixed(1) : '') + '</div>'
+        + '</div>';
+    }
+    var grid = document.getElementById('hourly');
+    grid.style.gridTemplateColumns = 'repeat(' + (end - start) + ', 1fr)';
+    grid.innerHTML = html;
+
+    // 気温カーブ
+    var svg = document.getElementById('curve');
+    svg.setAttribute('viewBox', '0 0 ' + temps.length + ' 100');
+    var mx = Math.max.apply(null, temps), mn = Math.min.apply(null, temps);
+    var range = Math.max(mx - mn, 1);
+    var pts = temps.map(function (t, k) {
+      return (k + 0.5) + ',' + (90 - (t - mn) / range * 80).toFixed(1);
+    }).join(' ');
+    svg.innerHTML = '<polyline points="' + pts + '" fill="none" stroke="#ffb04a" stroke-width="3" '
+      + 'stroke-linejoin="round" vector-effect="non-scaling-stroke" opacity="0.85"/>';
+  }
+
+  function renderDaily(data) {
+    var d = data.daily;
+    var todayStr = ymd(new Date());
+    var count = Math.min(DAYS, d.time.length);
+    var html = '';
+    for (var i = 0; i < count; i++) {
+      var ds = d.time[i];
+      var p = ds.split('-');
+      var dt = new Date(+p[0], +p[1] - 1, +p[2]);
+      var w = dt.getDay();
+      var hol = holidays[ds];
+      var cls = hol ? 'hol' : (w === 0 ? 'sun' : (w === 6 ? 'sat' : ''));
+      var x = wx(d.weather_code[i], 1);
+      var pp = d.precipitation_probability_max ? d.precipitation_probability_max[i] : null;
+      html += '<div class="day' + (ds === todayStr ? ' today' : '') + '">'
+        + '<div class="d ' + cls + '">' + (+p[1]) + '/' + (+p[2]) + '(' + WD[w] + ')</div>'
+        + '<div class="hname">' + (hol || '') + '</div>'
+        + '<div class="wicon">' + x[0] + '</div>'
+        + '<div class="wlabel">' + x[1] + '</div>'
+        + '<div class="t"><span class="max">' + round(d.temperature_2m_max[i]) + '</span>'
+        + '<span class="sep">/</span><span class="min">' + round(d.temperature_2m_min[i]) + '</span></div>'
+        + '<div class="p">☂ ' + (pp === null ? '-' : pp) + '%</div>'
+        + '</div>';
+    }
+    var cols = count > 10 ? Math.ceil(count / 2) : count;
+    var grid = document.getElementById('daily');
+    grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+    grid.innerHTML = html;
+    document.getElementById('dailyTitle').textContent = count + '日間の予報';
+  }
+
+  function renderNow(data) {
+    if (data.current) {
+      var c = wx(data.current.weather_code, data.current.is_day);
+      document.getElementById('nowIcon').textContent = c[0];
+      document.getElementById('nowTemp').textContent = data.current.temperature_2m.toFixed(1) + '℃';
+    }
+    var n = new Date();
+    document.getElementById('place').textContent = NAME;
+    document.getElementById('updated').textContent = '更新 ' + pad(n.getHours()) + ':' + pad(n.getMinutes());
+  }
+
+  tick();
+  setInterval(tick, 5000);
+  loadHolidays().then(loadForecast);
+  setInterval(loadForecast, REFRESH_MIN * 60 * 1000);
+  setInterval(loadHolidays, 24 * 60 * 60 * 1000);
+})();
+</script>
+</body>
+</html>
