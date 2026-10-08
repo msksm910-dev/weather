@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>週間天気ボード</title>
+<style>
+  :root {
+    --bg: #0b0f17;
+    --card: #151b27;
+    --line: #232b3a;
+    --text: #e8ecf3;
+    --sub: #8a94a7;
+    --hot: #ff6b5e;
+    --cold: #5ea8ff;
+    --rain: #58c4ff;
+    --sat: #5ea8ff;
+    --sun: #ff6b5e;
+    --today: #f5c542;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
+    font-family: "Noto Sans JP", "Hiragino Sans", sans-serif; }
+  body { display: flex; flex-direction: column; padding: 1.6vh 1.4vw; transition: filter 2s; }
+  body.dim { filter: brightness(0.35); }
+
+  header { display: flex; align-items: center; justify-content: space-between;
+    height: 14vh; padding: 0 0.6vw 1.2vh; border-bottom: 1px solid var(--line); }
+  .clock { font-size: 9vh; font-weight: 700; letter-spacing: 0.02em; line-height: 1; }
+  .date { font-size: 3vh; color: var(--sub); margin-top: 0.6vh; }
+  .now { display: flex; align-items: center; gap: 1.2vw; }
+  .now .icon { font-size: 7vh; }
+  .now .temp { font-size: 7vh; font-weight: 700; }
+  .now .meta { font-size: 2.4vh; color: var(--sub); line-height: 1.5; text-align: right; }
+
+  main { flex: 1; display: grid; grid-template-columns: repeat(7, 1fr);
+    grid-auto-rows: 1fr; gap: 1vh 0.8vw; padding-top: 1.4vh; min-height: 0; }
+  .day { background: var(--card); border-radius: 1.4vh; padding: 1vh 0.4vw;
+    display: flex; flex-direction: column; align-items: center; justify-content: space-between;
+    border: 2px solid transparent; min-height: 0; }
+  .day.today { border-color: var(--today); }
+  .d { font-size: 2.9vh; font-weight: 700; }
+  .d.sat { color: var(--sat); }
+  .d.sun, .d.hol { color: var(--sun); }
+  .hname { font-size: 1.7vh; color: var(--sun); height: 2vh; overflow: hidden; white-space: nowrap; }
+  .wicon { font-size: 6.5vh; line-height: 1.1; }
+  .wlabel { font-size: 2.1vh; color: var(--sub); white-space: nowrap; }
+  .t { font-size: 3.6vh; font-weight: 700; }
+  .t .max { color: var(--hot); }
+  .t .min { color: var(--cold); }
+  .t .sep { color: var(--sub); font-weight: 400; margin: 0 0.2vw; }
+  .p { font-size: 2.5vh; color: var(--rain); }
+  .p .mm { color: var(--sub); font-size: 2vh; margin-left: 0.3vw; }
+  .msg { grid-column: 1 / -1; align-self: center; text-align: center; font-size: 3vh; color: var(--sub); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="clock" id="clock">--:--</div>
+    <div class="date" id="date"></div>
+  </div>
+  <div class="now">
+    <div class="icon" id="nowIcon"></div>
+    <div class="temp" id="nowTemp"></div>
+    <div class="meta"><div id="place"></div><div id="updated">読み込み中…</div></div>
+  </div>
+</header>
+<main id="grid"><div class="msg">予報を取得しています…</div></main>
+
+<script>
+(function () {
+  // ===== 設定（URLの ?lat=..&lon=..&name=..&days=.. で上書き可） =====
+  var q = {};
+  location.search.replace(/^\?/, '').split('&').forEach(function (kv) {
+    if (!kv) return;
+    var a = kv.split('=');
+    q[decodeURIComponent(a[0])] = decodeURIComponent(a[1] || '');
+  });
+  var LAT  = parseFloat(q.lat)  || 35.4233;   // 岐阜市
+  var LON  = parseFloat(q.lon)  || 136.7607;
+  var NAME = q.name || '岐阜市';
+  var DAYS = Math.min(16, Math.max(7, parseInt(q.days, 10) || 14));
+  var DIM_FROM = q.dimfrom !== undefined ? parseInt(q.dimfrom, 10) : 22; // 夜間減光 開始
+  var DIM_TO   = q.dimto   !== undefined ? parseInt(q.dimto, 10)   : 6;  // 終了
+  var REFRESH_MIN = 30;
+
+  var WD = ['日', '月', '火', '水', '木', '金', '土'];
+  var holidays = {};
+
+  // WMO天気コード → [アイコン, ラベル]
+  function wx(code) {
+    var m = {
+      0: ['☀️', '快晴'], 1: ['🌤️', '晴れ'], 2: ['⛅', '晴時々曇'], 3: ['☁️', '曇り'],
+      45: ['🌫️', '霧'], 48: ['🌫️', '霧'],
+      51: ['🌦️', '霧雨'], 53: ['🌦️', '霧雨'], 55: ['🌧️', '霧雨'],
+      56: ['🌧️', '着氷性霧雨'], 57: ['🌧️', '着氷性霧雨'],
+      61: ['🌦️', '小雨'], 63: ['🌧️', '雨'], 65: ['🌧️', '大雨'],
+      66: ['🌧️', '着氷性の雨'], 67: ['🌧️', '着氷性の雨'],
+      71: ['🌨️', '小雪'], 73: ['🌨️', '雪'], 75: ['❄️', '大雪'], 77: ['🌨️', '雪'],
+      80: ['🌦️', 'にわか雨'], 81: ['🌧️', 'にわか雨'], 82: ['⛈️', '激しい雨'],
+      85: ['🌨️', 'にわか雪'], 86: ['❄️', 'にわか雪'],
+      95: ['⛈️', '雷雨'], 96: ['⛈️', '雷雨'], 99: ['⛈️', '雷雨']
+    };
+    return m[code] || ['❔', '-'];
+  }
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function round(v) { return v === null || v === undefined ? '-' : Math.round(v); }
+
+  // ===== 時計・夜間減光 =====
+  function tick() {
+    var n = new Date();
+    document.getElementById('clock').textContent = pad(n.getHours()) + ':' + pad(n.getMinutes());
+    document.getElementById('date').textContent =
+      n.getFullYear() + '年' + (n.getMonth() + 1) + '月' + n.getDate() + '日（' + WD[n.getDay()] + '）';
+    var h = n.getHours();
+    var dim = DIM_FROM > DIM_TO ? (h >= DIM_FROM || h < DIM_TO) : (h >= DIM_FROM && h < DIM_TO);
+    document.body.className = dim ? 'dim' : '';
+    // 毎日3:00にページごと再読み込み（長時間稼働の安定化）
+    if (h === 3 && n.getMinutes() === 0 && n.getSeconds() < 10) location.reload();
+  }
+
+  // ===== 祝日（取得できなくても表示は続行） =====
+  function loadHolidays() {
+    return fetch('https://holidays-jp.github.io/api/v1/date.json')
+      .then(function (r) { return r.json(); })
+      .then(function (j) { holidays = j || {}; })
+      .catch(function () {});
+  }
+
+  // ===== 予報 =====
+  function loadForecast() {
+    var url = 'https://api.open-meteo.com/v1/forecast'
+      + '?latitude=' + LAT + '&longitude=' + LON
+      + '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum'
+      + '&current=temperature_2m,weather_code'
+      + '&timezone=Asia%2FTokyo&forecast_days=' + DAYS;
+    return fetch(url)
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(render)
+      .catch(function (e) {
+        document.getElementById('updated').textContent = '取得失敗（' + e.message + '）・再試行します';
+        setTimeout(loadForecast, 5 * 60 * 1000);
+      });
+  }
+
+  function render(data) {
+    var d = data.daily;
+    var todayStr = ymd(new Date());
+    var html = '';
+    for (var i = 0; i < d.time.length; i++) {
+      var ds = d.time[i];
+      var p = ds.split('-');
+      var dt = new Date(+p[0], +p[1] - 1, +p[2]);
+      var w = dt.getDay();
+      var hol = holidays[ds];
+      var cls = hol ? 'hol' : (w === 0 ? 'sun' : (w === 6 ? 'sat' : ''));
+      var x = wx(d.weather_code[i]);
+      var pp = d.precipitation_probability_max ? d.precipitation_probability_max[i] : null;
+      var mm = d.precipitation_sum ? d.precipitation_sum[i] : null;
+      html += '<div class="day' + (ds === todayStr ? ' today' : '') + '">'
+        + '<div class="d ' + cls + '">' + (+p[1]) + '/' + (+p[2]) + '(' + WD[w] + ')</div>'
+        + '<div class="hname">' + (hol || '') + '</div>'
+        + '<div class="wicon">' + x[0] + '</div>'
+        + '<div class="wlabel">' + x[1] + '</div>'
+        + '<div class="t"><span class="max">' + round(d.temperature_2m_max[i]) + '</span>'
+        + '<span class="sep">/</span><span class="min">' + round(d.temperature_2m_min[i]) + '</span></div>'
+        + '<div class="p">☂ ' + (pp === null ? '-' : pp) + '%'
+        + (mm ? '<span class="mm">' + mm.toFixed(1) + 'mm</span>' : '') + '</div>'
+        + '</div>';
+    }
+    var grid = document.getElementById('grid');
+    grid.style.gridTemplateColumns = 'repeat(' + Math.ceil(d.time.length / (d.time.length > 8 ? 2 : 1)) + ', 1fr)';
+    grid.innerHTML = html;
+
+    if (data.current) {
+      var c = wx(data.current.weather_code);
+      document.getElementById('nowIcon').textContent = c[0];
+      document.getElementById('nowTemp').textContent = data.current.temperature_2m.toFixed(1) + '℃';
+    }
+    var n = new Date();
+    document.getElementById('place').textContent = NAME;
+    document.getElementById('updated').textContent = '更新 ' + pad(n.getHours()) + ':' + pad(n.getMinutes());
+  }
+
+  tick();
+  setInterval(tick, 5000);
+  loadHolidays().then(loadForecast);
+  setInterval(loadForecast, REFRESH_MIN * 60 * 1000);
+  setInterval(loadHolidays, 24 * 60 * 60 * 1000);
+})();
+</script>
+</body>
+</html>
